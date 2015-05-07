@@ -30,6 +30,7 @@ import (
 
 var UnbalancedTagsError = errors.New("unbalanced tags")
 var TagExpr = regexp.MustCompile("<(/?)([A-Za-z0-9]+).*?>")
+var EntityExpr = regexp.MustCompile("&#?[A-Za-z0-9]+;")
 
 // TruncateHtml will truncate a given byte slice to a maximum of maxlen visible
 // characters and optionally append ellipsis. HTML tags are automatically closed
@@ -66,6 +67,7 @@ func TruncateHtml(buf []byte, maxlen int, ellipsis string) ([]byte, error) {
         // Move to nearest tag and count visible characters along the way.
         offset := 0
         visibleCharacterMaxReached := false
+        entityDetected := false
 
         for localOffset, runeValue := range string(buf[bufPtr:]) {
             offset = localOffset
@@ -73,6 +75,15 @@ func TruncateHtml(buf []byte, maxlen int, ellipsis string) ([]byte, error) {
             if runeValue == '<' {
                 // Start of tag.
                 break
+            } else if runeValue == '&' {
+                // Possible start of HTML Entity
+                loc := EntityExpr.FindIndex(buf[bufPtr+localOffset:])
+                if loc != nil && loc[0] == 0 {
+                    // Entity found!
+                    entityDetected = true
+                    offset += loc[1]-1 // Now pointing to ;
+                }
+                visible += 1
             } else if unicode.IsPrint(runeValue) && !unicode.IsSpace(runeValue) {
                 // Printable, non-space character. Increment visible count.
                 visible += 1
@@ -83,13 +94,26 @@ func TruncateHtml(buf []byte, maxlen int, ellipsis string) ([]byte, error) {
                 visibleCharacterMaxReached = true
                 break
             }
+
+            if entityDetected {
+                break
+            }
         }
 
         // Increment bufPtr to end of scanned section
         bufPtr += offset
 
+        // Stop scanning if the end of the buffer was reached or if the max
+        // desired visible characters was reached
         if visibleCharacterMaxReached || bufPtr >= len(buf)-1 {
             break
+        }
+
+        // If an entity was detected, continue scanning for next tag
+        if entityDetected {
+            // Advance past the ;
+            bufPtr += 1
+            continue
         }
 
         // Now find the expression sub-matches
